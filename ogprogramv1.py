@@ -5,14 +5,11 @@ import plotly.express as px
 
 # --- KONFIGURACJA BAZY DANYCH ---
 def get_connection():
-    # check_same_thread=False jest wymagane dla Streamlit
-    conn = sqlite3.connect('sklep.db', check_same_thread=False)
-    return conn
+    return sqlite3.connect('magazyn.db', check_same_thread=False)
 
 def inicjalizuj_baze():
     conn = get_connection()
     cursor = conn.cursor()
-    # Tabela Kategoria
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS kategoria (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -20,198 +17,167 @@ def inicjalizuj_baze():
             opis TEXT
         )
     ''')
-    # Tabela Produkty
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS produkty (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             nazwa TEXT NOT NULL,
-            liczba INTEGER DEFAULT 0,
+            liczba REAL DEFAULT 0,
+            jednostka TEXT,
             cena REAL DEFAULT 0.0,
+            stan_minimalny REAL DEFAULT 0,
             kategoria_id INTEGER,
             FOREIGN KEY (kategoria_id) REFERENCES kategoria (id)
         )
     ''')
     conn.commit()
 
+# --- FUNKCJE POMOCNICZE ---
+def koloruj_niskie_stany(row):
+    # Jeśli stan jest mniejszy lub równy minimalnemu - koloruj na czerwono
+    if row['Ilość'] <= row['Stan Min.']:
+        return ['background-color: rgba(255, 75, 75, 0.3)'] * len(row)
+    return [''] * len(row)
+
 # --- KONFIGURACJA STRONY ---
-st.set_page_config(page_title="ProManager 2.0", layout="wide", page_icon="🏢")
+st.set_page_config(page_title="System Magazynowy Pro", layout="wide", page_icon="📦")
 inicjalizuj_baze()
 conn = get_connection()
 
-# --- POPRAWIONA STYLIZACJA CSS (Dostosowana do motywów) ---
+# Stylizacja CSS
 st.markdown("""
     <style>
-    /* Stylizacja kontenerów metryk (okienek na górze) */
     [data-testid="stMetric"] {
-        background-color: rgba(120, 120, 120, 0.1); /* Półprzezroczyste tło */
-        border: 1px solid rgba(120, 120, 120, 0.2); /* Delikatna ramka */
-        padding: 15px;
-        border-radius: 15px;
-        box-shadow: 0 4px 10px rgba(0,0,0,0.05);
-        transition: transform 0.3s ease;
-    }
-    
-    /* Efekt po najechaniu myszką na okienko */
-    [data-testid="stMetric"]:hover {
-        transform: translateY(-5px);
-        background-color: rgba(120, 120, 120, 0.15);
-        border-color: #ff4b4b; /* Akcent kolorystyczny Streamlit */
-    }
-
-    /* Poprawa czytelności etykiet */
-    [data-testid="stMetricLabel"] p {
-        font-size: 16px !important;
-        font-weight: 600 !important;
+        background-color: rgba(120, 120, 120, 0.1);
+        border: 1px solid rgba(120, 120, 120, 0.2);
+        padding: 15px; border-radius: 15px;
     }
     </style>
     """, unsafe_allow_html=True)
 
-st.title("🏢 Profesjonalny System Zarządzania Magazynem")
-st.markdown("---")
+st.title("📦 Zaawansowany System Magazynowy")
 
-# Pobranie danych do statystyk
+# Pobranie danych
 df_prod = pd.read_sql_query("""
-    SELECT p.*, k.nazwa as kat_nazwa 
+    SELECT p.id, p.nazwa as Produkt, p.liczba as Ilość, p.jednostka as Jm, 
+           p.cena as Cena, p.stan_minimalny as [Stan Min.], k.nazwa as Kategoria
     FROM produkty p 
     LEFT JOIN kategoria k ON p.kategoria_id = k.id
 """, conn)
 
-# --- SEKCE STATYSTYK (WIDGETY) ---
+# --- STATYSTYKI ---
 col1, col2, col3, col4 = st.columns(4)
 with col1:
-    st.metric("📦 Razem produktów", len(df_prod))
+    st.metric("📦 Razem towarów", len(df_prod))
 with col2:
-    wartosc = (df_prod['liczba'] * df_prod['cena']).sum() if not df_prod.empty else 0
-    st.metric("💰 Wartość magazynu", f"{wartosc:,.2f} zł")
+    wartosc = (df_prod['Ilość'] * df_prod['Cena']).sum() if not df_prod.empty else 0
+    st.metric("💰 Wartość netto", f"{wartosc:,.2f} zł")
 with col3:
-    kat_count = len(pd.read_sql_query("SELECT id FROM kategoria", conn))
-    st.metric("📂 Kategorie", kat_count)
+    st.metric("📂 Kategorie", len(df_prod['Kategoria'].unique()))
 with col4:
-    niskie_stany = len(df_prod[df_prod['liczba'] < 5]) if not df_prod.empty else 0
-    st.metric("⚠️ Niskie stany (<5)", niskie_stany)
+    # Licznik niskich stanów na podstawie nowej kolumny stan_minimalny
+    niskie = len(df_prod[df_prod['Ilość'] <= df_prod['Stan Min.']]) if not df_prod.empty else 0
+    st.metric("⚠️ Do zamówienia", niskie)
 
-# --- ZAKŁADKI (TABS) ---
-tab_lista, tab_dodaj, tab_edytuj, tab_analiza = st.tabs([
-    "🔍 Przegląd Magazynu", "➕ Dodaj Nowe", "✏️ Edycja i Usuwanie", "📊 Analiza i Raporty"
+# --- ZAKŁADKI ---
+tab_przeglad, tab_operacje, tab_rejestracja, tab_kategorie, tab_analiza = st.tabs([
+    "🔍 Przegląd Magazynu", "🔄 Przyjęcie/Wydanie", "📝 Zarejestruj nowy towar", "📁 Zarządzaj kategoriami", "📊 Analiza"
 ])
 
-# ZAKŁADKA 1: LISTA I WYSZUKIWANIE
-with tab_lista:
-    st.subheader("Aktualne stany magazynowe")
-    search_query = st.text_input("Wyszukaj produkt po nazwie...", "")
-    
-    filtered_df = df_prod.copy()
-    if search_query:
-        filtered_df = df_prod[df_prod['nazwa'].str.contains(search_query, case=False)]
-    
-    # Wyświetlanie tabeli
-    st.dataframe(
-        filtered_df[['id', 'nazwa', 'liczba', 'cena', 'kat_nazwa']].rename(
-            columns={'nazwa': 'Produkt', 'liczba': 'Ilość', 'cena': 'Cena (zł)', 'kat_nazwa': 'Kategoria'}
-        ), 
-        use_container_width=True,
-        hide_index=True
-    )
-
-# ZAKŁADKA 2: DODAWANIE
-with tab_dodaj:
-    c1, c2 = st.columns(2)
-    with c1:
-        st.subheader("Nowy Produkt")
-        with st.form("form_produkt", clear_on_submit=True):
-            nazwa = st.text_input("Nazwa produktu")
-            liczba = st.number_input("Ilość", min_value=0, step=1)
-            cena = st.number_input("Cena (zł)", min_value=0.0, format="%.2f")
-            
-            kat_list = pd.read_sql_query("SELECT * FROM kategoria", conn)
-            opcje_kat = kat_list['nazwa'].tolist() if not kat_list.empty else []
-            wybrana_kat = st.selectbox("Wybierz kategorię", options=opcje_kat)
-            
-            if st.form_submit_button("✅ Dodaj Produkt"):
-                if nazwa and wybrana_kat:
-                    k_id = kat_list[kat_list['nazwa'] == wybrana_kat]['id'].values[0]
-                    conn.execute("INSERT INTO produkty (nazwa, liczba, cena, kategoria_id) VALUES (?, ?, ?, ?)", 
-                                 (nazwa, liczba, cena, int(k_id)))
-                    conn.commit()
-                    st.success(f"Dodano produkt: {nazwa}")
-                    st.rerun()
-                else:
-                    st.error("Wypełnij wszystkie pola!")
-
-    with c2:
-        st.subheader("Nowa Kategoria")
-        with st.form("form_kat", clear_on_submit=True):
-            n_kat = st.text_input("Nazwa kategorii")
-            o_kat = st.text_area("Opis (opcjonalnie)")
-            if st.form_submit_button("📁 Utwórz Kategorię"):
-                if n_kat:
-                    conn.execute("INSERT INTO kategoria (nazwa, opis) VALUES (?, ?)", (n_kat, o_kat))
-                    conn.commit()
-                    st.success(f"Utworzono kategorię: {n_kat}")
-                    st.rerun()
-                else:
-                    st.error("Podaj nazwę kategorii!")
-
-# ZAKŁADKA 3: EDYCJA I USUWANIE
-with tab_edytuj:
-    st.subheader("Modyfikacja istniejących danych")
+# ZAKŁADKA 1: PRZEGLĄD (Z PODŚWIETLANIEM)
+with tab_przeglad:
+    st.subheader("Stany magazynowe (Podświetlone na czerwono = poniżej minimum)")
     if not df_prod.empty:
-        edit_id = st.selectbox("Wybierz ID produktu do zmiany", options=df_prod['id'].tolist())
-        wybrany_prod = df_prod[df_prod['id'] == edit_id].iloc[0]
-        
-        col_e1, col_e2 = st.columns(2)
-        with col_e1:
-            st.write(f"**Wybrany:** {wybrany_prod['nazwa']}")
-            nowa_cena = st.number_input("Zmień cenę", value=float(wybrany_prod['cena']), min_value=0.0)
-            nowa_ilosc = st.number_input("Zmień ilość", value=int(wybrany_prod['liczba']), min_value=0)
+        # Aplikujemy stylizację kolorami
+        styled_df = df_prod.style.apply(koloruj_niskie_stany, axis=1)
+        st.dataframe(styled_df, use_container_width=True, hide_index=True)
+    else:
+        st.info("Magazyn jest pusty.")
+
+# ZAKŁADKA 2: PRZYJĘCIE / WYDANIE
+with tab_operacje:
+    st.subheader("Szybka aktualizacja stanu (Ruch towaru)")
+    if not df_prod.empty:
+        with st.form("form_ruch"):
+            wybrany_p = st.selectbox("Wybierz towar", options=df_prod['Produkt'].tolist())
+            typ_operacji = st.radio("Typ operacji", ["Przyjęcie (+)", "Wydanie (-)"])
+            ilosc_zmiana = st.number_input("Ilość", min_value=0.1, step=1.0)
             
-            if st.button("💾 Zapisz zmiany"):
-                conn.execute("UPDATE produkty SET cena = ?, liczba = ? WHERE id = ?", (nowa_cena, nowa_ilosc, edit_id))
+            if st.form_submit_button("Wykonaj operację"):
+                if typ_operacji == "Przyjęcie (+)":
+                    conn.execute("UPDATE produkty SET liczba = liczba + ? WHERE nazwa = ?", (ilosc_zmiana, wybrany_p))
+                else:
+                    # Sprawdzenie czy nie wyjdziemy na minus
+                    obecna_ilosc = df_prod[df_prod['Produkt'] == wybrany_p]['Ilość'].values[0]
+                    if obecna_ilosc >= ilosc_zmiana:
+                        conn.execute("UPDATE produkty SET liczba = liczba - ? WHERE nazwa = ?", (ilosc_zmiana, wybrany_p))
+                    else:
+                        st.error("Brak wystarczającej ilości towaru!")
                 conn.commit()
-                st.success("Zaktualizowano dane!")
-                st.rerun()
-        
-        with col_e2:
-            st.write("**Niebezpieczna strefa**")
-            if st.button("🗑️ Usuń ten produkt na stałe"):
-                conn.execute("DELETE FROM produkty WHERE id = ?", (edit_id,))
-                conn.commit()
-                st.warning(f"Produkt o ID {edit_id} został usunięty.")
                 st.rerun()
     else:
-        st.info("Brak produktów w bazie.")
+        st.info("Najpierw zarejestruj towar.")
 
-# ZAKŁADKA 4: ANALIZA
+# ZAKŁADKA 3: REJESTRACJA NOWEGO TOWARU
+with tab_rejestracja:
+    st.subheader("Formularz rejestracji towaru")
+    kat_list = pd.read_sql_query("SELECT * FROM kategoria", conn)
+    
+    if kat_list.empty:
+        st.warning("Dodaj najpierw kategorię w zakładce 'Zarządzaj kategoriami'!")
+    else:
+        with st.form("form_rejestracja", clear_on_submit=True):
+            col_a, col_b = st.columns(2)
+            with col_a:
+                n_nazwa = st.text_input("Nazwa towaru")
+                n_jm = st.selectbox("Jednostka miary", ["szt", "kg", "m", "opak", "l"])
+                n_kat = st.selectbox("Kategoria", options=kat_list['nazwa'].tolist())
+            with col_b:
+                n_cena = st.number_input("Cena zakupu netto", min_value=0.0, format="%.2f")
+                n_min = st.number_input("Minimalny stan magazynowy", min_value=0.0)
+                n_start = st.number_input("Stan początkowy", min_value=0.0)
+            
+            if st.form_submit_button("Zarejestruj towar w systemie"):
+                k_id = kat_list[kat_list['nazwa'] == n_kat]['id'].values[0]
+                conn.execute("""
+                    INSERT INTO produkty (nazwa, liczba, jednostka, cena, stan_minimalny, kategoria_id) 
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, (n_nazwa, n_start, n_jm, n_cena, n_min, int(k_id)))
+                conn.commit()
+                st.success(f"Towar {n_nazwa} został pomyślnie zarejestrowany.")
+                st.rerun()
+
+# ZAKŁADKA 4: KATEGORIE I USUWANIE
+with tab_kategorie:
+    col_k1, col_k2 = st.columns(2)
+    with col_k1:
+        st.subheader("Dodaj kategorię")
+        with st.form("form_kat_new"):
+            nk = st.text_input("Nazwa")
+            ok = st.text_input("Opis")
+            if st.form_submit_button("Dodaj"):
+                conn.execute("INSERT INTO kategoria (nazwa, opis) VALUES (?, ?)", (nk, ok))
+                conn.commit()
+                st.rerun()
+    
+    with col_k2:
+        st.subheader("Usuń kategorię")
+        if not kat_list.empty:
+            kat_do_usuniecia = st.selectbox("Wybierz kategorię do usunięcia", options=kat_list['nazwa'].tolist())
+            st.error("UWAGA: Usunięcie kategorii może wpłynąć na przypisane produkty!")
+            if st.button("Usuń bezpowrotnie"):
+                conn.execute("DELETE FROM kategoria WHERE nazwa = ?", (kat_do_usuniecia,))
+                conn.commit()
+                st.rerun()
+
+# ZAKŁADKA 5: ANALIZA
 with tab_analiza:
-    st.subheader("Wizualizacja i eksport")
     if not df_prod.empty:
-        col_chart1, col_chart2 = st.columns(2)
+        fig = px.bar(df_prod, x='Produkt', y='Ilość', color='Kategoria', 
+                     title="Poziom zapasów w podziale na towary", text='Jm')
+        st.plotly_chart(fig, use_container_width=True)
         
-        with col_chart1:
-            fig1 = px.pie(df_prod, names='kat_nazwa', values='liczba', 
-                         title="Udział ilościowy kategorii",
-                         hole=0.4, color_discrete_sequence=px.colors.qualitative.Pastel)
-            st.plotly_chart(fig1, use_container_width=True)
-            
-        with col_chart2:
-            df_prod['Wartość Total'] = df_prod['liczba'] * df_prod['cena']
-            fig2 = px.bar(df_prod, x='nazwa', y='Wartość Total', 
-                         title="Wartość finansowa poszczególnych produktów",
-                         labels={'nazwa': 'Produkt', 'Wartość Total': 'Suma (zł)'},
-                         color='kat_nazwa')
-            st.plotly_chart(fig2, use_container_width=True)
-
-        st.divider()
-        # Eksport danych
+        # Przycisk eksportu
         csv = df_prod.to_csv(index=False).encode('utf-8')
-        st.download_button(
-            label="📥 Pobierz pełny raport magazynowy (CSV)",
-            data=csv,
-            file_name="raport_magazyn.csv",
-            mime="text/csv",
-        )
-    else:
-        st.info("Dodaj produkty, aby zobaczyć analizę.")
+        st.download_button("Pobierz raport (CSV)", data=csv, file_name="magazyn.csv")
 
-# Zamknięcie połączenia na końcu
 conn.close()
