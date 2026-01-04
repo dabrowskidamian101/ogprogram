@@ -6,38 +6,22 @@ from datetime import datetime
 
 # --- KONFIGURACJA BAZY DANYCH ---
 def get_connection():
-    return sqlite3.connect('magazyn_v3.db', check_same_thread=False)
+    return sqlite3.connect('magazyn_final.db', check_same_thread=False)
 
 def inicjalizuj_baze():
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS kategoria (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            nazwa TEXT NOT NULL,
-            opis TEXT
-        )
-    ''')
+    cursor.execute('CREATE TABLE IF NOT EXISTS kategoria (id INTEGER PRIMARY KEY AUTOINCREMENT, nazwa TEXT NOT NULL, opis TEXT)')
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS produkty (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            nazwa TEXT NOT NULL,
-            liczba REAL DEFAULT 0,
-            jednostka TEXT,
-            cena REAL DEFAULT 0.0,
-            stan_minimalny REAL DEFAULT 0,
-            kategoria_id INTEGER,
+            id INTEGER PRIMARY KEY AUTOINCREMENT, nazwa TEXT NOT NULL, liczba REAL DEFAULT 0,
+            jednostka TEXT, cena REAL DEFAULT 0.0, stan_minimalny REAL DEFAULT 0, kategoria_id INTEGER,
             FOREIGN KEY (kategoria_id) REFERENCES kategoria (id)
         )
     ''')
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS historia (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            data_operacji TEXT,
-            towar TEXT,
-            typ TEXT,
-            ilosc REAL,
-            jednostka TEXT
+            id INTEGER PRIMARY KEY AUTOINCREMENT, data_operacji TEXT, towar TEXT, typ TEXT, ilosc REAL, jednostka TEXT
         )
     ''')
     conn.commit()
@@ -53,7 +37,6 @@ st.set_page_config(page_title="ProManager ERP", layout="wide", page_icon="📦")
 inicjalizuj_baze()
 conn = get_connection()
 
-# Stylizacja CSS dla metryk (naprawione białe okienka)
 st.markdown("""
     <style>
     [data-testid="stMetric"] {
@@ -93,13 +76,24 @@ tab_przeglad, tab_operacje, tab_rejestracja, tab_edycja, tab_historia, tab_anali
     "🔍 Przegląd", "🔄 Przyjęcie/Wydanie", "📝 Zarejestruj nowy towar", "✏️ Edytuj Towar/Kategorię", "📜 Historia", "📊 Analiza"
 ])
 
-# ZAKŁADKA 1: PRZEGLĄD
+# ZAKŁADKA 1: PRZEGLĄD (Z FILTROWANIEM)
 with tab_przeglad:
     st.subheader("Stany magazynowe")
     if not df_prod.empty:
-        # Formatowanie do 2 miejsc po przecinku w widoku
-        df_display = df_prod.copy()
-        styled_df = df_display.style.format({
+        c_f1, c_f2 = st.columns([2, 1])
+        with c_f1:
+            szukaj = st.text_input("🔍 Szukaj produktu (nazwa lub kategoria)")
+        with c_f2:
+            sortuj_wg = st.selectbox("Sortuj według", options=df_prod.columns.tolist(), index=1)
+        
+        # Logika filtrów
+        df_view = df_prod.copy()
+        if szukaj:
+            df_view = df_view[df_view['Produkt'].str.contains(szukaj, case=False) | df_view['Kategoria'].str.contains(szukaj, case=False)]
+        
+        df_view = df_view.sort_values(by=sortuj_wg)
+
+        styled_df = df_view.style.format({
             'Ilość': '{:.2f}', 'Cena': '{:.2f} zł', 'Stan Min.': '{:.2f}'
         }).apply(koloruj_niskie_stany, axis=1)
         st.dataframe(styled_df, use_container_width=True, hide_index=True)
@@ -113,7 +107,8 @@ with tab_operacje:
         with st.form("form_ruch"):
             wybrany_p = st.selectbox("Wybierz towar", options=df_prod['Produkt'].tolist())
             typ_op = st.radio("Typ operacji", ["Przyjęcie", "Wydanie"])
-            ile = st.number_input("Ilość", min_value=0.01, step=1.0, format="%.2f")
+            # Zmiana step=1.0 sprawia, że + / - zmienia o całe liczby
+            ile = st.number_input("Ilość", min_value=1.0, step=1.0, format="%.2f")
             
             if st.form_submit_button("Zatwierdź operację"):
                 prod_data = df_prod[df_prod['Produkt'] == wybrany_p].iloc[0]
@@ -123,13 +118,11 @@ with tab_operacje:
                     conn.execute("UPDATE produkty SET liczba = liczba + ? WHERE nazwa = ?", (ile, wybrany_p))
                     conn.execute("INSERT INTO historia (data_operacji, towar, typ, ilosc, jednostka) VALUES (?,?,?,?,?)",
                                  (now, wybrany_p, "PRZYJĘCIE", ile, prod_data['Jm']))
-                    st.success(f"Przyjęto {ile} {prod_data['Jm']}")
                 else:
                     if prod_data['Ilość'] >= ile:
                         conn.execute("UPDATE produkty SET liczba = liczba - ? WHERE nazwa = ?", (ile, wybrany_p))
                         conn.execute("INSERT INTO historia (data_operacji, towar, typ, ilosc, jednostka) VALUES (?,?,?,?,?)",
                                      (now, wybrany_p, "WYDANIE", ile, prod_data['Jm']))
-                        st.success(f"Wydano {ile} {prod_data['Jm']}")
                     else:
                         st.error("Niewystarczający stan magazynowy!")
                 conn.commit()
@@ -148,9 +141,9 @@ with tab_rejestracja:
             n_jm = st.selectbox("Jednostka", ["szt", "kg", "m", "l", "opak"])
             n_kat = st.selectbox("Kategoria", options=k_list['nazwa'].tolist() if not k_list.empty else [])
         with c_reg2:
-            n_cena = st.number_input("Cena netto", min_value=0.0, format="%.2f")
-            n_min = st.number_input("Stan minimalny", min_value=0.0, format="%.2f")
-            n_start = st.number_input("Stan początkowy", min_value=0.0, format="%.2f")
+            n_cena = st.number_input("Cena netto", min_value=0.0, step=1.0, format="%.2f")
+            n_min = st.number_input("Stan minimalny", min_value=0.0, step=1.0, format="%.2f")
+            n_start = st.number_input("Stan początkowy", min_value=0.0, step=1.0, format="%.2f")
         
         if st.form_submit_button("Zarejestruj"):
             if n_nazwa and n_kat:
@@ -161,32 +154,25 @@ with tab_rejestracja:
                 st.success("Zarejestrowano!")
                 st.rerun()
 
-# ZAKŁADKA 4: EDYCJA TOWARU / KATEGORII
+# ZAKŁADKA 4: EDYCJA
 with tab_edycja:
     col_ed1, col_ed2 = st.columns(2)
-    
     with col_ed1:
         st.subheader("✏️ Edytuj / Usuń Towar")
         if not df_prod.empty:
             t_do_ed = st.selectbox("Wybierz towar do zmiany", options=df_prod['Produkt'].tolist())
             t_dane = df_prod[df_prod['Produkt'] == t_do_ed].iloc[0]
-            
-            e_cena = st.number_input("Nowa cena", value=float(t_dane['Cena']), format="%.2f")
-            e_min = st.number_input("Nowy stan min.", value=float(t_dane['Stan Min.']), format="%.2f")
-            
-            ce1, ce2 = st.columns(2)
-            with ce1:
-                if st.button("Zapisz zmiany w towarze"):
-                    conn.execute("UPDATE produkty SET cena = ?, stan_minimalny = ? WHERE id = ?", (e_cena, e_min, int(t_dane['id'])))
-                    conn.commit()
-                    st.success("Zaktualizowano!")
-                    st.rerun()
-            with ce2:
-                if st.button("❌ USUŃ TOWAR"):
-                    conn.execute("DELETE FROM produkty WHERE id = ?", (int(t_dane['id']),))
-                    conn.commit()
-                    st.rerun()
-
+            e_cena = st.number_input("Nowa cena", value=float(t_dane['Cena']), step=1.0, format="%.2f")
+            e_min = st.number_input("Nowy stan min.", value=float(t_dane['Stan Min.']), step=1.0, format="%.2f")
+            if st.button("Zapisz zmiany w towarze"):
+                conn.execute("UPDATE produkty SET cena = ?, stan_minimalny = ? WHERE id = ?", (e_cena, e_min, int(t_dane['id'])))
+                conn.commit()
+                st.success("Zaktualizowano!")
+                st.rerun()
+            if st.button("❌ USUŃ TOWAR"):
+                conn.execute("DELETE FROM produkty WHERE id = ?", (int(t_dane['id']),))
+                conn.commit()
+                st.rerun()
     with col_ed2:
         st.subheader("📂 Zarządzaj Kategoriami")
         new_k = st.text_input("Nazwa nowej kategorii")
@@ -195,23 +181,35 @@ with tab_edycja:
                 conn.execute("INSERT INTO kategoria (nazwa) VALUES (?)", (new_k,))
                 conn.commit()
                 st.rerun()
-        
         st.divider()
-        if not k_list.empty:
-            k_del = st.selectbox("Usuń kategorię", options=k_list['nazwa'].tolist())
+        k_list_curr = pd.read_sql_query("SELECT nazwa FROM kategoria", conn)
+        if not k_list_curr.empty:
+            k_del = st.selectbox("Usuń kategorię", options=k_list_curr['nazwa'].tolist())
             if st.button("Usuń kategorię"):
                 conn.execute("DELETE FROM kategoria WHERE nazwa = ?", (k_del,))
                 conn.commit()
                 st.rerun()
 
-# ZAKŁADKA 5: HISTORIA
+# ZAKŁADKA 5: HISTORIA (Z FILTROWANIEM)
 with tab_historia:
     st.subheader("Historia przyjęć i wydań")
     df_hist = pd.read_sql_query("SELECT data_operacji as Data, towar as Towar, typ as Typ, ilosc as Ilość, jednostka as Jm FROM historia ORDER BY id DESC", conn)
+    
     if not df_hist.empty:
-        st.dataframe(df_hist.style.format({'Ilość': '{:.2f}'}), use_container_width=True, hide_index=True)
+        c_h1, c_h2 = st.columns(2)
+        with c_h1:
+            f_typ = st.multiselect("Filtruj typ", options=["PRZYJĘCIE", "WYDANIE"], default=["PRZYJĘCIE", "WYDANIE"])
+        with c_h2:
+            f_towar = st.selectbox("Filtruj towar", options=["Wszystkie"] + df_hist['Towar'].unique().tolist())
+        
+        # Aplikacja filtrów
+        df_h_view = df_hist[df_hist['Typ'].isin(f_typ)]
+        if f_towar != "Wszystkie":
+            df_h_view = df_h_view[df_h_view['Towar'] == f_towar]
+            
+        st.dataframe(df_h_view.style.format({'Ilość': '{:.2f}'}), use_container_width=True, hide_index=True)
     else:
-        st.info("Brak historii operacji.")
+        st.info("Brak historii.")
 
 # ZAKŁADKA 6: ANALIZA
 with tab_analiza:
