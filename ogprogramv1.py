@@ -4,169 +4,131 @@ import plotly.express as px
 from datetime import datetime
 from supabase import create_client, Client
 
-# --- POŁĄCZENIE PRZEZ SECRETS ---
+# --- POŁĄCZENIE ---
 try:
-    # Pobieranie danych z Twoich Secrets (widocznych na image_af0202.png)
-    SUPABASE_URL = st.secrets["SUPABASE_URL"]
-    SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
-    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-except Exception as e:
-    st.error("Błąd konfiguracji kluczy Supabase. Sprawdź zakładkę Secrets w Streamlit Cloud.")
+    URL = st.secrets["SUPABASE_URL"]
+    KEY = st.secrets["SUPABASE_KEY"]
+    supabase: Client = create_client(URL, KEY)
+except:
+    st.error("Błąd kluczy w Secrets!")
     st.stop()
 
 # --- STYLIZACJA ---
 st.set_page_config(page_title="Magazyn Pro", layout="wide")
-st.markdown("""
-    <style>
-    [data-testid="stMetric"] {
-        background-color: rgba(120, 120, 120, 0.1);
-        border: 1px solid rgba(120, 120, 120, 0.2);
-        padding: 15px; border-radius: 15px;
-    }
-    </style>
-    """, unsafe_allow_html=True)
+st.markdown("<style>[data-testid='stMetric'] {background-color: rgba(120,120,120,0.1); border: 1px solid rgba(120,120,120,0.2); padding: 15px; border-radius: 15px; color: white;}</style>", unsafe_allow_html=True)
 
-# --- FUNKCJE POBIERANIA DANYCH ---
-def fetch_products():
+# --- FUNKCJE POBIERANIA ---
+def get_data():
     try:
-        # Pobieranie z relacją do kategorii
-        res = supabase.table("produkty").select("id, nazwa, liczba, jednostka, cena, stan_minimalny, kategoria(nazwa)").execute()
-        if not res.data:
-            return pd.DataFrame()
-        df = pd.DataFrame(res.data)
-        # Rozpakowanie zagnieżdżonej nazwy kategorii
-        df['Kategoria'] = df['kategoria'].apply(lambda x: x['nazwa'] if isinstance(x, dict) else "Brak")
-        df = df.drop(columns=['kategoria']).rename(columns={
-            'nazwa': 'Produkt', 'liczba': 'Ilość', 'jednostka': 'Jm',
-            'cena': 'Cena', 'stan_minimalny': 'Stan Min.'
-        })
-        # Konwersja na liczby dla zaokrągleń (image_0fcd2e.png pokazuje nadmiar zer)
+        # Pobieramy produkty i kategorie osobno, żeby uniknąć błędów joinowania
+        res_p = supabase.table("produkty").select("*").execute()
+        res_k = supabase.table("kategoria").select("id, nazwa").execute()
+        
+        df_p = pd.DataFrame(res_p.data)
+        df_k = pd.DataFrame(res_k.data)
+
+        if df_p.empty:
+            return pd.DataFrame(columns=['id', 'Produkt', 'Ilość', 'Jm', 'Cena', 'Stan Min.', 'Kategoria']), df_k
+        
+        # Łączymy dane w Pythonie (to bezpieczniejsze niż SQL Join w Supabase)
+        if not df_k.empty:
+            df_final = df_p.merge(df_k, left_on='kategoria_id', right_on='id', suffixes=('', '_kat'))
+            df_final = df_final.rename(columns={
+                'nazwa': 'Produkt', 'liczba': 'Ilość', 'jednostka': 'Jm',
+                'cena': 'Cena', 'stan_minimalny': 'Stan Min.', 'nazwa_kat': 'Kategoria'
+            })
+        else:
+            df_final = df_p.copy()
+            df_final['Kategoria'] = "Brak"
+
+        # Zaokrąglenia dla estetyki (image_0fcd2e.png)
         for col in ['Ilość', 'Cena', 'Stan Min.']:
-            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-        return df
-    except Exception:
-        return pd.DataFrame()
+            df_final[col] = pd.to_numeric(df_final[col], errors='coerce').fillna(0)
+            
+        return df_final[['id', 'Produkt', 'Ilość', 'Jm', 'Cena', 'Stan Min.', 'Kategoria']], df_k
+    except Exception as e:
+        return pd.DataFrame(), pd.DataFrame()
 
-def fetch_categories():
-    try:
-        res = supabase.table("kategoria").select("*").execute()
-        return res.data if res.data else []
-    except:
-        return []
-
-# Pobranie danych na starcie
-df_prod = fetch_products()
-kat_data = fetch_categories()
+df_prod, df_kat = get_data()
 
 # --- DASHBOARD ---
 st.title("🏢 Profesjonalny System Zarządzania Magazynem")
 
 c1, c2, c3, c4 = st.columns(4)
-with c1: st.metric("📦 Towary", len(df_prod))
-with c2: 
-    val = (df_prod['Ilość'] * df_prod['Cena']).sum() if not df_prod.empty else 0
-    st.metric("💰 Wartość", f"{val:,.2f} zł")
-with c3: st.metric("📂 Kategorie", len(kat_data))
-with c4:
-    niskie = len(df_prod[df_prod['Ilość'] <= df_prod['Stan Min.']]) if not df_prod.empty else 0
-    st.metric("⚠️ Niskie stany", niskie)
+c1.metric("📦 Towary", len(df_prod))
+c2.metric("💰 Wartość", f"{(df_prod['Ilość']*df_prod['Cena']).sum():,.2f} zł" if not df_prod.empty else "0.00 zł")
+c3.metric("📂 Kategorie", len(df_kat))
+c4.metric("⚠️ Niskie stany", len(df_prod[df_prod['Ilość'] <= df_prod['Stan Min.']]) if not df_prod.empty else 0)
 
-# --- ZAKŁADKI ---
-tab_przeglad, tab_operacje, tab_rejestracja, tab_edycja, tab_historia = st.tabs([
-    "🔍 Przegląd", "🔄 Przyjęcie/Wydanie", "📝 Zarejestruj", "✏️ Edytuj Towar/Kategorię", "📜 Historia"
-])
+tabs = st.tabs(["🔍 Przegląd", "🔄 Ruch towaru", "📝 Zarejestruj", "✏️ Edycja/Kategorie", "📜 Historia"])
 
 # 1. PRZEGLĄD
-with tab_przeglad:
-    st.subheader("Stany magazynowe")
+with tabs[0]:
     if not df_prod.empty:
-        # Formatowanie do 2 miejsc po przecinku (naprawia problem z image_0fcd2e.png)
-        st.dataframe(df_prod.style.format({
-            'Ilość': '{:.2f}', 'Cena': '{:.2f} zł', 'Stan Min.': '{:.2f}'
-        }), use_container_width=True, hide_index=True)
+        st.dataframe(df_prod.style.format({'Ilość': '{:.2f}', 'Cena': '{:.2f}', 'Stan Min.': '{:.2f}'}), use_container_width=True, hide_index=True)
     else:
-        st.info("Baza jest pusta. Zacznij od dodania kategorii w zakładce 'Edytuj'.")
+        st.info("Baza jest pusta. Dodaj kategorię i towar.")
 
-# 2. PRZYJĘCIE/WYDANIE
-with tab_operacje:
+# 2. RUCH TOWARU
+with tabs[1]:
     if not df_prod.empty:
-        with st.form("form_ruch"):
-            p_wyb = st.selectbox("Wybierz towar", options=df_prod['Produkt'].tolist())
-            typ_op = st.radio("Operacja", ["Przyjęcie (+)", "Wydanie (-)"])
-            # Krok 1.0 dla liczb całkowitych
-            ile = st.number_input("Ilość", min_value=1.0, step=1.0, format="%.2f")
+        with st.form("ruch"):
+            p = st.selectbox("Produkt", df_prod['Produkt'].tolist())
+            t = st.radio("Typ", ["Przyjęcie", "Wydanie"])
+            ile = st.number_input("Ilość", min_value=1.0, step=1.0)
             if st.form_submit_button("Zatwierdź"):
-                row = df_prod[df_prod['Produkt'] == p_wyb].iloc[0]
-                nowa_q = row['Ilość'] + ile if "+" in typ_op else row['Ilość'] - ile
-                if "-" in typ_op and row['Ilość'] < ile:
-                    st.error("Brak towaru na stanie!")
-                else:
-                    supabase.table("produkty").update({"liczba": nowa_q}).eq("id", int(row['id'])).execute()
-                    supabase.table("historia").insert({
-                        "data_operacji": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                        "towar": p_wyb, "typ": typ_op, "ilosc": ile, "jednostka": row['Jm']
-                    }).execute()
-                    st.success("Zaktualizowano stan!")
-                    st.rerun()
-    else:
-        st.warning("Najpierw zarejestruj towary.")
-
-# 3. ZAREJESTRUJ
-with tab_rejestracja:
-    if not kat_data:
-        st.error("Dodaj najpierw kategorię w zakładce 'Edytuj Towar/Kategorię'!")
-    else:
-        with st.form("reg_form"):
-            c_r1, c_r2 = st.columns(2)
-            with c_r1:
-                n = st.text_input("Nazwa produktu")
-                jm = st.selectbox("Jm", ["szt", "kg", "m", "l"])
-                k = st.selectbox("Kategoria", options=[x['nazwa'] for x in kat_data])
-            with c_r2:
-                c = st.number_input("Cena netto", min_value=0.0, step=1.0, format="%.2f")
-                sm = st.number_input("Stan minimalny", min_value=0.0, step=1.0, format="%.2f")
-                si = st.number_input("Stan początkowy", min_value=0.0, step=1.0, format="%.2f")
-            if st.form_submit_button("Dodaj produkt"):
-                kid = next(x['id'] for x in kat_data if x['nazwa'] == k)
-                supabase.table("produkty").insert({
-                    "nazwa": n, "liczba": si, "jednostka": jm, 
-                    "cena": c, "stan_minimalny": sm, "kategoria_id": kid
+                row = df_prod[df_prod['Produkt'] == p].iloc[0]
+                nowa = row['Ilość'] + ile if t == "Przyjęcie" else row['Ilość'] - ile
+                supabase.table("produkty").update({"liczba": nowa}).eq("id", int(row['id'])).execute()
+                supabase.table("historia").insert({
+                    "data_operacji": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    "towar": p, "typ": t.upper(), "ilosc": ile, "jednostka": row['Jm']
                 }).execute()
                 st.rerun()
 
-# 4. EDYCJA I DODAWANIE KATEGORII
-with tab_edycja:
-    col_e1, col_e2 = st.columns(2)
-    with col_e1:
-        st.subheader("➕ Dodaj kategorię")
-        with st.form("kat_form"):
-            nk = st.text_input("Nazwa nowej kategorii")
-            if st.form_submit_button("Zapisz kategorię"):
+# 3. ZAREJESTRUJ
+with tabs[2]:
+    if df_kat.empty:
+        st.warning("Dodaj najpierw kategorię!")
+    else:
+        with st.form("reg"):
+            n = st.text_input("Nazwa")
+            jm = st.selectbox("Jednostka", ["szt", "kg", "m", "l"])
+            k_nazwa = st.selectbox("Kategoria", df_kat['nazwa'].tolist())
+            c = st.number_input("Cena", min_value=0.0, step=1.0)
+            sm = st.number_input("Stan min.", min_value=0.0, step=1.0)
+            if st.form_submit_button("Dodaj"):
+                kid = int(df_kat[df_kat['nazwa'] == k_nazwa]['id'].iloc[0])
+                supabase.table("produkty").insert({
+                    "nazwa": n, "liczba": 0, "jednostka": jm, "cena": c, "stan_minimalny": sm, "kategoria_id": kid
+                }).execute()
+                st.rerun()
+
+# 4. EDYCJA I KATEGORIE
+with tabs[3]:
+    c_a, c_b = st.columns(2)
+    with c_a:
+        st.subheader("➕ Nowa kategoria")
+        with st.form("k_add"):
+            nk = st.text_input("Nazwa")
+            if st.form_submit_button("Zapisz"):
                 if nk:
                     supabase.table("kategoria").insert({"nazwa": nk}).execute()
                     st.rerun()
-    with col_e2:
-        st.subheader("✏️ Zarządzaj produktami")
+    with c_b:
+        st.subheader("🗑️ Usuń produkt")
         if not df_prod.empty:
-            t_ed = st.selectbox("Towar do zmiany", options=df_prod['Produkt'].tolist())
-            t_row = df_prod[df_prod['Produkt'] == t_ed].iloc[0]
-            # Formularz edycji (image_10aa27.png)
-            new_c = st.number_input("Nowa cena", value=float(t_row['Cena']), step=1.0, format="%.2f")
-            new_m = st.number_input("Nowy stan min.", value=float(t_row['Stan Min.']), step=1.0, format="%.2f")
-            if st.button("Zapisz zmiany w towarze"):
-                supabase.table("produkty").update({"cena": new_c, "stan_minimalny": new_m}).eq("id", int(t_row['id'])).execute()
+            p_del = st.selectbox("Wybierz towar", df_prod['Produkt'].tolist())
+            if st.button("Usuń bezpowrotnie"):
+                id_del = int(df_prod[df_prod['Produkt'] == p_del]['id'].iloc[0])
+                supabase.table("produkty").delete().eq("id", id_del).execute()
                 st.rerun()
-        else:
-            st.info("Brak towarów do edycji.")
 
 # 5. HISTORIA
-with tab_historia:
-    st.subheader("Historia operacji")
+with tabs[4]:
     try:
         res_h = supabase.table("historia").select("*").order("id", desc=True).execute()
         if res_h.data:
-            st.dataframe(pd.DataFrame(res_h.data)[['data_operacji', 'towar', 'typ', 'ilosc', 'jednostka']], use_container_width=True, hide_index=True)
-        else:
-            st.info("Brak historii.")
+            st.dataframe(pd.DataFrame(res_h.data), use_container_width=True, hide_index=True)
     except:
-        st.info("Brak tabeli historii.")
+        st.info("Historia jest pusta.")
