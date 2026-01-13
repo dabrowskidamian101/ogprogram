@@ -12,28 +12,19 @@ except Exception:
     st.error("Błąd kluczy w Secrets! Sprawdź ustawienia w Streamlit Cloud.")
     st.stop()
 
-# --- STYLIZACJA I WYŚRODKOWANIE ---
+# --- STYLIZACJA ---
 st.set_page_config(page_title="Magazyn Pro", layout="wide")
 
-# Wstrzyknięcie własnego CSS dla lepszego wyglądu tabel i kontenerów
 st.markdown("""
     <style>
-    /* Stylowanie metryk na górze */
     [data-testid="stMetric"] {
         background-color: rgba(120, 120, 120, 0.1);
         border: 1px solid rgba(120, 120, 120, 0.2);
         padding: 15px; border-radius: 15px;
     }
-    /* Centrowanie nagłówków sekcji */
     .section-header {
         text-align: center;
         margin-bottom: 20px;
-    }
-    /* Styl dla ramek wokół tabel */
-    .table-container {
-        padding: 10px;
-        border-radius: 10px;
-        background-color: rgba(0,0,0,0.2);
     }
     </style>
     """, unsafe_allow_html=True)
@@ -75,22 +66,24 @@ c3.metric("📂 Kategorie", len(df_kat))
 
 tabs = st.tabs(["🔍 Przegląd", "🔄 Przyjęcie/Wydanie", "📝 Zarejestruj", "🏷️ Dodaj kategorię", "✏️ Edytuj towar", "📜 Historia"])
 
-# 1. PRZEGLĄD (Wyśrodkowany i sformatowany)
+# 1. PRZEGLĄD (Poprawione wyrównanie)
 with tabs[0]:
     st.markdown("<h2 class='section-header'>🔍 Aktualny Stan Magazynowy</h2>", unsafe_allow_html=True)
     if not df_prod.empty:
-        df_display = df_prod.drop(columns=['kategoria_id']).copy()
+        df_display = df_prod.drop(columns=['kategoria_id', 'id']).copy()
         df_display.insert(0, 'Lp.', range(1, len(df_display) + 1))
         
-        # Tworzymy trzy kolumny, aby tabela była wyśrodkowana i nie zajmowała całej szerokości jeśli nie musi
-        _, mid_col, _ = st.columns([1, 10, 1])
+        _, mid_col, _ = st.columns([1, 8, 1])
         with mid_col:
             st.dataframe(
-                df_display.drop(columns=['id']).style.format({
-                    'Ilość': '{:.2f}', 
-                    'Cena': '{:.2f} zł'
-                }), 
-                use_container_width=True, 
+                df_display,
+                column_config={
+                    "Lp.": st.column_config.Column(width="small", help="Liczba porządkowa"),
+                    "Produkt": st.column_config.Column(width="large"),
+                    "Ilość": st.column_config.NumberColumn(format="%.2f"),
+                    "Cena": st.column_config.NumberColumn(format="%.2f zł"),
+                },
+                use_container_width=True,
                 hide_index=True
             )
     else:
@@ -110,7 +103,10 @@ with tabs[1]:
                     st.error("Błąd: Brak towaru!")
                 else:
                     supabase.table("produkty").update({"liczba": int(nowa)}).eq("id", int(row['id'])).execute()
-                    supabase.table("historia").insert({"data_operacji": datetime.now().strftime("%Y-%m-%d %H:%M"), "towar": p_name, "typ": t_type.upper(), "ilosc": int(ile)}).execute()
+                    supabase.table("historia").insert({
+                        "data_operacji": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                        "towar": p_name, "typ": t_type.upper(), "ilosc": int(ile)
+                    }).execute()
                     st.success("Zaktualizowano!")
                     st.rerun()
 
@@ -184,7 +180,7 @@ with tabs[4]:
                     supabase.table("produkty").delete().eq("id", int(dane_produktu['id'])).execute()
                     st.rerun()
 
-# 6. HISTORIA (Wyśrodkowana i sformatowana)
+# 6. HISTORIA (Poprawione wyrównanie)
 with tabs[5]:
     st.markdown("<h2 class='section-header'>📜 Dziennik Operacji</h2>", unsafe_allow_html=True)
     try:
@@ -193,15 +189,17 @@ with tabs[5]:
             df_h = pd.DataFrame(res_h.data)
             df_h.insert(0, 'Lp.', range(1, len(df_h) + 1))
             
-            _, mid_col_h, _ = st.columns([1, 10, 1])
+            _, mid_col_h, _ = st.columns([1, 8, 1])
             with mid_col_h:
                 st.dataframe(
                     df_h[['Lp.', 'data_operacji', 'towar', 'typ', 'ilosc']].rename(columns={
-                        'data_operacji': 'Data i Godzina', 
-                        'towar': 'Nazwa Produktu', 
-                        'typ': 'Rodzaj Ruchu', 
-                        'ilosc': 'Ilość'
+                        'data_operacji': 'Data i Godzina', 'towar': 'Nazwa Produktu', 
+                        'typ': 'Rodzaj Ruchu', 'ilosc': 'Ilość'
                     }), 
+                    column_config={
+                        "Lp.": st.column_config.Column(width="small"),
+                        "Nazwa Produktu": st.column_config.Column(width="large"),
+                    },
                     use_container_width=True, 
                     hide_index=True
                 )
