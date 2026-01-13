@@ -12,14 +12,28 @@ except Exception:
     st.error("Błąd kluczy w Secrets! Sprawdź ustawienia w Streamlit Cloud.")
     st.stop()
 
-# --- STYLIZACJA ---
+# --- STYLIZACJA I WYŚRODKOWANIE ---
 st.set_page_config(page_title="Magazyn Pro", layout="wide")
+
+# Wstrzyknięcie własnego CSS dla lepszego wyglądu tabel i kontenerów
 st.markdown("""
     <style>
+    /* Stylowanie metryk na górze */
     [data-testid="stMetric"] {
         background-color: rgba(120, 120, 120, 0.1);
         border: 1px solid rgba(120, 120, 120, 0.2);
         padding: 15px; border-radius: 15px;
+    }
+    /* Centrowanie nagłówków sekcji */
+    .section-header {
+        text-align: center;
+        margin-bottom: 20px;
+    }
+    /* Styl dla ramek wokół tabel */
+    .table-container {
+        padding: 10px;
+        border-radius: 10px;
+        background-color: rgba(0,0,0,0.2);
     }
     </style>
     """, unsafe_allow_html=True)
@@ -29,7 +43,6 @@ def get_data():
     try:
         res_p = supabase.table("produkty").select("*").execute()
         res_k = supabase.table("kategoria").select("id, nazwa").execute()
-        
         df_p = pd.DataFrame(res_p.data)
         df_k = pd.DataFrame(res_k.data)
 
@@ -46,7 +59,6 @@ def get_data():
         for col in ['Ilość', 'Cena']:
             if col in df_f.columns:
                 df_f[col] = pd.to_numeric(df_f[col], errors='coerce').fillna(0)
-            
         return df_f[['id', 'Produkt', 'Ilość', 'Cena', 'Kategoria', 'kategoria_id']], df_k
     except Exception:
         return pd.DataFrame(), pd.DataFrame()
@@ -61,16 +73,26 @@ c1.metric("📦 Towary", len(df_prod))
 c2.metric("💰 Wartość", f"{(df_prod['Ilość']*df_prod['Cena']).sum():,.2f} zł" if not df_prod.empty else "0.00 zł")
 c3.metric("📂 Kategorie", len(df_kat))
 
-# NOWA STRUKTURA ZAKŁADEK
 tabs = st.tabs(["🔍 Przegląd", "🔄 Przyjęcie/Wydanie", "📝 Zarejestruj", "🏷️ Dodaj kategorię", "✏️ Edytuj towar", "📜 Historia"])
 
-# 1. PRZEGLĄD
+# 1. PRZEGLĄD (Wyśrodkowany i sformatowany)
 with tabs[0]:
-    st.subheader("🔍 Stan magazynowy")
+    st.markdown("<h2 class='section-header'>🔍 Aktualny Stan Magazynowy</h2>", unsafe_allow_html=True)
     if not df_prod.empty:
         df_display = df_prod.drop(columns=['kategoria_id']).copy()
         df_display.insert(0, 'Lp.', range(1, len(df_display) + 1))
-        st.dataframe(df_display.drop(columns=['id']).style.format({'Ilość': '{:.2f}', 'Cena': '{:.2f}'}), use_container_width=True, hide_index=True)
+        
+        # Tworzymy trzy kolumny, aby tabela była wyśrodkowana i nie zajmowała całej szerokości jeśli nie musi
+        _, mid_col, _ = st.columns([1, 10, 1])
+        with mid_col:
+            st.dataframe(
+                df_display.drop(columns=['id']).style.format({
+                    'Ilość': '{:.2f}', 
+                    'Cena': '{:.2f} zł'
+                }), 
+                use_container_width=True, 
+                hide_index=True
+            )
     else:
         st.info("Baza jest pusta.")
 
@@ -79,7 +101,7 @@ with tabs[1]:
     if not df_prod.empty:
         with st.form("ruch_form"):
             p_name = st.selectbox("Wybierz produkt", df_prod['Produkt'].tolist())
-            t_type = st.radio("Rodzaj operacji", ["Przyjęcie", "Wydanie"])
+            t_type = st.radio("Rodzaj operacji", ["Przyjęcie", "Wydanie"], horizontal=True)
             ile = st.number_input("Ilość", min_value=1, step=1)
             if st.form_submit_button("Zatwierdź"):
                 row = df_prod[df_prod['Produkt'] == p_name].iloc[0]
@@ -108,7 +130,7 @@ with tabs[2]:
                     supabase.table("produkty").insert({"nazwa": str(n), "liczba": int(si), "cena": int(c), "kategoria_id": kid}).execute()
                     st.rerun()
 
-# 4. DODAJ KATEGORIĘ (NOWA ZAKŁADKA)
+# 4. DODAJ KATEGORIĘ
 with tabs[3]:
     ca, cb = st.columns(2)
     with ca:
@@ -131,53 +153,59 @@ with tabs[3]:
                     st.success("Usunięto!")
                     st.rerun()
                 except:
-                    st.error("Nie można usunąć kategorii, do której są przypisane produkty!")
+                    st.error("Błąd: Produkty są przypisane do tej kategorii!")
 
-# 5. EDYTUJ TOWAR (ZMODYFIKOWANA ZAKŁADKA)
+# 5. EDYTUJ TOWAR
 with tabs[4]:
-    st.subheader("✏️ Edycja parametrów towaru")
+    st.subheader("✏️ Edycja towaru")
     if not df_prod.empty:
-        # Wybór produktu do edycji
-        produkt_do_edycji = st.selectbox("Wybierz produkt do zmiany danych", df_prod['Produkt'].tolist())
+        produkt_do_edycji = st.selectbox("Wybierz produkt", df_prod['Produkt'].tolist())
         dane_produktu = df_prod[df_prod['Produkt'] == produkt_do_edycji].iloc[0]
         
         with st.form("edit_prod_form"):
-            nowa_nazwa = st.text_input("Zmień nazwę", value=dane_produktu['Produkt'])
-            nowa_cena = st.number_input("Zmień cenę", value=int(dane_produktu['Cena']), min_value=0, step=1)
-            # Domyślnie ustawiamy obecną kategorię
-            obecna_kat_idx = df_kat['nazwa'].tolist().index(dane_produktu['Kategoria']) if dane_produktu['Kategoria'] in df_kat['nazwa'].tolist() else 0
-            nowa_kat = st.selectbox("Zmień kategorię", df_kat['nazwa'].tolist(), index=obecna_kat_idx)
+            nowa_nazwa = st.text_input("Nazwa", value=dane_produktu['Produkt'])
+            nowa_cena = st.number_input("Cena", value=int(dane_produktu['Cena']), min_value=0, step=1)
+            kat_list = df_kat['nazwa'].tolist()
+            cur_kat = dane_produktu['Kategoria']
+            def_idx = kat_list.index(cur_kat) if cur_kat in kat_list else 0
+            nowa_kat = st.selectbox("Kategoria", kat_list, index=def_idx)
             
-            col_e1, col_e2 = st.columns(2)
-            with col_e1:
+            c_e1, c_e2 = st.columns(2)
+            with c_e1:
                 if st.form_submit_button("Zapisz zmiany"):
                     kid_new = int(df_kat[df_kat['nazwa'] == nowa_kat]['id'].iloc[0])
                     supabase.table("produkty").update({
-                        "nazwa": nowa_nazwa, 
-                        "cena": int(nowa_cena), 
-                        "kategoria_id": kid_new
+                        "nazwa": nowa_nazwa, "cena": int(nowa_cena), "kategoria_id": kid_new
                     }).eq("id", int(dane_produktu['id'])).execute()
-                    st.success("Zaktualizowano dane produktu!")
+                    st.success("Zmieniono!")
                     st.rerun()
-            with col_e2:
-                if st.form_submit_button("Usuń całkowicie ten produkt"):
+            with c_e2:
+                if st.form_submit_button("🗑️ Usuń produkt"):
                     supabase.table("produkty").delete().eq("id", int(dane_produktu['id'])).execute()
-                    st.warning("Produkt został usunięty.")
                     st.rerun()
-    else:
-        st.info("Brak towarów do edycji.")
 
-# 6. HISTORIA
+# 6. HISTORIA (Wyśrodkowana i sformatowana)
 with tabs[5]:
+    st.markdown("<h2 class='section-header'>📜 Dziennik Operacji</h2>", unsafe_allow_html=True)
     try:
         res_h = supabase.table("historia").select("*").order("id", desc=True).execute()
         if res_h.data:
             df_h = pd.DataFrame(res_h.data)
             df_h.insert(0, 'Lp.', range(1, len(df_h) + 1))
-            st.dataframe(df_h[['Lp.', 'data_operacji', 'towar', 'typ', 'ilosc']].rename(columns={
-                'data_operacji': 'Data', 'towar': 'Produkt', 'typ': 'Typ', 'ilosc': 'Ilość'
-            }), use_container_width=True, hide_index=True)
+            
+            _, mid_col_h, _ = st.columns([1, 10, 1])
+            with mid_col_h:
+                st.dataframe(
+                    df_h[['Lp.', 'data_operacji', 'towar', 'typ', 'ilosc']].rename(columns={
+                        'data_operacji': 'Data i Godzina', 
+                        'towar': 'Nazwa Produktu', 
+                        'typ': 'Rodzaj Ruchu', 
+                        'ilosc': 'Ilość'
+                    }), 
+                    use_container_width=True, 
+                    hide_index=True
+                )
         else:
-            st.info("Brak wpisów.")
+            st.info("Historia jest pusta.")
     except:
-        st.error("Błąd tabeli historia.")
+        st.error("Błąd ładowania historii.")
