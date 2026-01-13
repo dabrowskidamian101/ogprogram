@@ -9,7 +9,7 @@ try:
     KEY = st.secrets["SUPABASE_KEY"]
     supabase: Client = create_client(URL, KEY)
 except Exception:
-    st.error("Błąd kluczy w Secrets! Sprawdź ustawienia w Streamlit Cloud.")
+    st.error("Błąd kluczy w Secrets!")
     st.stop()
 
 # --- STYLIZACJA ---
@@ -66,19 +66,19 @@ c3.metric("📂 Kategorie", len(df_kat))
 
 tabs = st.tabs(["🔍 Przegląd", "🔄 Przyjęcie/Wydanie", "📝 Zarejestruj", "🏷️ Dodaj kategorię", "✏️ Edytuj towar", "📜 Historia"])
 
-# 1. PRZEGLĄD (Poprawione wyrównanie)
+# 1. PRZEGLĄD (Wyrównanie Lp. do lewej/środka)
 with tabs[0]:
     st.markdown("<h2 class='section-header'>🔍 Aktualny Stan Magazynowy</h2>", unsafe_allow_html=True)
     if not df_prod.empty:
         df_display = df_prod.drop(columns=['kategoria_id', 'id']).copy()
         df_display.insert(0, 'Lp.', range(1, len(df_display) + 1))
         
-        _, mid_col, _ = st.columns([1, 8, 1])
+        _, mid_col, _ = st.columns([1, 10, 1])
         with mid_col:
             st.dataframe(
                 df_display,
                 column_config={
-                    "Lp.": st.column_config.Column(width="small", help="Liczba porządkowa"),
+                    "Lp.": st.column_config.Column(width="small", label="Lp.", help="Kolejny numer"),
                     "Produkt": st.column_config.Column(width="large"),
                     "Ilość": st.column_config.NumberColumn(format="%.2f"),
                     "Cena": st.column_config.NumberColumn(format="%.2f zł"),
@@ -124,9 +124,10 @@ with tabs[2]:
                 if n:
                     kid = int(df_kat[df_kat['nazwa'] == k_name]['id'].iloc[0])
                     supabase.table("produkty").insert({"nazwa": str(n), "liczba": int(si), "cena": int(c), "kategoria_id": kid}).execute()
+                    st.success("Produkt dodany!")
                     st.rerun()
 
-# 4. DODAJ KATEGORIĘ
+# 4. DODAJ KATEGORIĘ (Poprawione usuwanie)
 with tabs[3]:
     ca, cb = st.columns(2)
     with ca:
@@ -136,7 +137,6 @@ with tabs[3]:
             if st.form_submit_button("Zapisz kategorię"):
                 if nowa_kat_nazwa:
                     supabase.table("kategoria").insert({"nazwa": nowa_kat_nazwa}).execute()
-                    st.success("Dodano kategorię!")
                     st.rerun()
     with cb:
         st.subheader("🗑️ Usuń kategorię")
@@ -144,12 +144,14 @@ with tabs[3]:
             kat_do_usuniecia = st.selectbox("Wybierz kategorię do usunięcia", df_kat['nazwa'].tolist())
             if st.button("Usuń kategorię"):
                 id_kat = int(df_kat[df_kat['nazwa'] == kat_do_usuniecia]['id'].iloc[0])
-                try:
+                # Sprawdzamy czy są produkty przypisane
+                produkty_w_kat = df_prod[df_prod['kategoria_id'] == id_kat]
+                if not produkty_w_kat.empty:
+                    st.error(f"Błąd: Produkty ({len(produkty_w_kat)}) są przypisane do tej kategorii!")
+                else:
                     supabase.table("kategoria").delete().eq("id", id_kat).execute()
-                    st.success("Usunięto!")
-                    st.rerun()
-                except:
-                    st.error("Błąd: Produkty są przypisane do tej kategorii!")
+                    st.success("Kategoria została usunięta!")
+                    st.rerun() # Wymusza odświeżenie danych i zniknięcie kategorii z list
 
 # 5. EDYTUJ TOWAR
 with tabs[4]:
@@ -173,14 +175,13 @@ with tabs[4]:
                     supabase.table("produkty").update({
                         "nazwa": nowa_nazwa, "cena": int(nowa_cena), "kategoria_id": kid_new
                     }).eq("id", int(dane_produktu['id'])).execute()
-                    st.success("Zmieniono!")
                     st.rerun()
             with c_e2:
                 if st.form_submit_button("🗑️ Usuń produkt"):
                     supabase.table("produkty").delete().eq("id", int(dane_produktu['id'])).execute()
                     st.rerun()
 
-# 6. HISTORIA (Poprawione wyrównanie)
+# 6. HISTORIA
 with tabs[5]:
     st.markdown("<h2 class='section-header'>📜 Dziennik Operacji</h2>", unsafe_allow_html=True)
     try:
@@ -189,21 +190,16 @@ with tabs[5]:
             df_h = pd.DataFrame(res_h.data)
             df_h.insert(0, 'Lp.', range(1, len(df_h) + 1))
             
-            _, mid_col_h, _ = st.columns([1, 8, 1])
+            _, mid_col_h, _ = st.columns([1, 10, 1])
             with mid_col_h:
                 st.dataframe(
                     df_h[['Lp.', 'data_operacji', 'towar', 'typ', 'ilosc']].rename(columns={
-                        'data_operacji': 'Data i Godzina', 'towar': 'Nazwa Produktu', 
-                        'typ': 'Rodzaj Ruchu', 'ilosc': 'Ilość'
+                        'data_operacji': 'Data i Godzina', 'towar': 'Produkt', 
+                        'typ': 'Operacja', 'ilosc': 'Ilość'
                     }), 
-                    column_config={
-                        "Lp.": st.column_config.Column(width="small"),
-                        "Nazwa Produktu": st.column_config.Column(width="large"),
-                    },
+                    column_config={"Lp.": st.column_config.Column(width="small")},
                     use_container_width=True, 
                     hide_index=True
                 )
-        else:
-            st.info("Historia jest pusta.")
     except:
-        st.error("Błąd ładowania historii.")
+        st.info("Historia jest pusta.")
